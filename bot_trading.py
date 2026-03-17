@@ -8,8 +8,6 @@ import time
 import threading
 from datetime import datetime
 import os
-from dotenv import load_dotenv
-load_dotenv()
 # ============================================================
 #  CONFIGURATION — variables d'environnement Railway
 # ============================================================
