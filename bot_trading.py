@@ -15,10 +15,6 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID  = int(os.environ.get("ADMIN_ID", "0"))
 REPORT_HOUR = os.environ.get("REPORT_HOUR", "08:00")
 
-if not BOT_TOKEN:
-    raise ValueError("❌ Variable d'environnement BOT_TOKEN manquante !")
-# ============================================================
-
 bot = telebot.TeleBot(BOT_TOKEN)
 USERS_FILE  = "users.json"
 ALERTS_FILE = "alerts.json"
@@ -156,9 +152,64 @@ def signal_stock(c1d, c5d):
     if s <= -0.5:  return "🟥 SELL"
     return "🟡 NEUTRE"
 
+def risque_crypto(c1h, c24h, c7d):
+    volatility = abs(c1h) + abs(c24h) * 0.5 + abs(c7d) * 0.3
+    if volatility >= 8:  return "🔴 ÉLEVÉ"
+    if volatility >= 4:  return "🟡 MODÉRÉ"
+    return "🟢 FAIBLE"
+
+def risque_stock(c1d, c5d):
+    volatility = abs(c1d) * 0.7 + abs(c5d) * 0.3
+    if volatility >= 4:  return "🔴 ÉLEVÉ"
+    if volatility >= 2:  return "🟡 MODÉRÉ"
+    return "🟢 FAIBLE"
+
+def entree_crypto(price, c24h):
+    """Zone d'entrée = prix actuel ±1-2% selon tendance"""
+    if c24h >= 0:
+        return price * 0.98  # attendre léger repli
+    return price * 1.01  # rebond confirmé
+
+def entree_stock(price, c1d):
+    if c1d >= 0:
+        return price * 0.985
+    return price * 1.005
+
+def objectif_crypto(price, c7d, signal):
+    """Objectif basé sur momentum 7j"""
+    if "STRONG BUY" in signal: mult = 1.15
+    elif "BUY" in signal:      mult = 1.08
+    elif "STRONG SELL" in signal: mult = 0.88
+    elif "SELL" in signal:     mult = 0.94
+    else:                      mult = 1.03
+    return price * mult
+
+def objectif_stock(price, c5d, signal):
+    if "STRONG BUY" in signal: mult = 1.12
+    elif "BUY" in signal:      mult = 1.07
+    elif "STRONG SELL" in signal: mult = 0.90
+    elif "SELL" in signal:     mult = 0.95
+    else:                      mult = 1.03
+    return price * mult
+
+def get_macro_context():
+    now = datetime.now()
+    return (
+        f"🌍 *CONTEXTE MACRO*\n"
+        f"📅 _{now.strftime('%d/%m/%Y')}_\n\n"
+        f"🏦 *Fed* — Taux directeur : 4.25–4.50%\n"
+        f"  Prochaine réunion : 18-19 mars · Statu quo attendu\n"
+        f"  Inflation PCE ~2.5% · Marché data-dépendant\n\n"
+        f"🏦 *BCE* — Taux : 2.65% · Baisse progressive en cours\n"
+        f"  Inflation zone euro ~2.3% · Ton accommodant\n\n"
+        f"📊 *Contexte global* : Environnement favorable aux actifs risqués\n"
+        f"  Dollar stable · Liquidités abondantes · IA = catalyseur majeur"
+    )
+
 def arrow(v): return "↑" if v >= 0 else "↓"
 def fmt(v):   return f"{'+'if v>=0 else ''}{v:.2f}%"
 def fmtp(v, idx=False): return f"{v:,.0f} pts" if idx else f"${v:,.2f}"
+def pct_diff(a, b): return ((b - a) / a) * 100
 
 
 # ════════════════════════════════════════════════════════════
@@ -167,7 +218,11 @@ def fmtp(v, idx=False): return f"{v:,.0f} pts" if idx else f"${v:,.2f}"
 
 def build_market_msg(cp, yp):
     now = datetime.now().strftime("%d/%m/%Y à %Hh%M")
-    lines = [f"📊 *RAPPORT DE MARCHÉ*\n_{now}_\n", "*── 🪙 CRYPTO ──*"]
+    lines = [
+        f"📊 *RAPPORT DE MARCHÉ APPROFONDI*\n_{now}_\n",
+        get_macro_context(),
+        "\n━━━━━━━━━━━━━━━━━━━━━━\n*🪙 CRYPTO*"
+    ]
 
     for cid, label in CRYPTO_ASSETS.items():
         d = cp.get(cid)
@@ -175,26 +230,47 @@ def build_market_msg(cp, yp):
         c1h  = d.get("price_change_percentage_1h_in_currency") or 0
         c24h = d.get("price_change_percentage_24h_in_currency") or 0
         c7d  = d.get("price_change_percentage_7d_in_currency") or 0
+        price = d['current_price']
+        sig   = signal_crypto(c1h, c24h, c7d)
+        risk  = risque_crypto(c1h, c24h, c7d)
+        entry = entree_crypto(price, c24h)
+        obj   = objectif_crypto(price, c7d, sig)
+        pot   = pct_diff(price, obj)
         lines.append(
-            f"*{label}* — ${d['current_price']:,.2f}\n"
-            f"  1h {arrow(c1h)}{fmt(c1h)} | 24h {arrow(c24h)}{fmt(c24h)} | 7j {arrow(c7d)}{fmt(c7d)}\n"
-            f"  Signal : {signal_crypto(c1h, c24h, c7d)}"
+            f"\n*{label}* — ${price:,.2f}\n"
+            f"  📈 1h {arrow(c1h)}{fmt(c1h)} | 24h {arrow(c24h)}{fmt(c24h)} | 7j {arrow(c7d)}{fmt(c7d)}\n"
+            f"  🎯 Signal : {sig}\n"
+            f"  ⚠️ Risque : {risk}\n"
+            f"  📥 Entrée : ~${entry:,.2f}\n"
+            f"  🏹 Objectif : ~${obj:,.2f} ({'+' if pot>=0 else ''}{pot:.1f}%)"
         )
 
-    lines.append("\n*── 📈 ACTIONS & INDICES ──*")
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━\n*📈 ACTIONS & INDICES*")
     for ticker, label in YAHOO_ASSETS.items():
         d = yp.get(ticker)
         if not d:
-            lines.append(f"*{label}* — indisponible"); continue
-        idx = ticker.startswith("^")
+            lines.append(f"\n*{label}* — indisponible"); continue
+        idx   = ticker.startswith("^")
+        c1d   = d['change_1d']
+        c5d   = d['change_5d']
+        price = d['price']
+        sig   = signal_stock(c1d, c5d)
+        risk  = risque_stock(c1d, c5d)
+        entry = entree_stock(price, c1d)
+        obj   = objectif_stock(price, c5d, sig)
+        pot   = pct_diff(price, obj)
         lines.append(
-            f"*{label}* — {fmtp(d['price'], idx)}\n"
-            f"  1j {arrow(d['change_1d'])}{fmt(d['change_1d'])} | 5j {arrow(d['change_5d'])}{fmt(d['change_5d'])}\n"
+            f"\n*{label}* — {fmtp(price, idx)}\n"
+            f"  📈 1j {arrow(c1d)}{fmt(c1d)} | 5j {arrow(c5d)}{fmt(c5d)}\n"
             f"  Haut {fmtp(d['high'], idx)} | Bas {fmtp(d['low'], idx)}\n"
-            f"  Signal : {signal_stock(d['change_1d'], d['change_5d'])}"
+            f"  🎯 Signal : {sig}\n"
+            f"  ⚠️ Risque : {risk}\n"
+            f"  📥 Entrée : ~{fmtp(entry, idx)}\n"
+            f"  🏹 Objectif : ~{fmtp(obj, idx)} ({'+' if pot>=0 else ''}{pot:.1f}%)"
         )
 
-    lines.append("\n_Source : CoinGecko + Yahoo Finance_")
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("⚠️ _Document informatif uniquement. Pas de conseil en investissement. Capitaux à risque._\n_Source : CoinGecko + Yahoo Finance_")
     return "\n\n".join(lines)
 
 def build_signal_msg(cp, yp):
