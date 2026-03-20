@@ -88,12 +88,12 @@ ALIAS = {
     "SCHNEIDER": "SU.PA",
 }
 
-# FMP : les indices utilisent ^ directement, actions EU gardent .PA
+# FMP historical endpoint : on enlève le ^ pour les indices
 FMP_TICKER_MAP = {
-    "^FCHI":  "%5EFCHI",
-    "^GSPC":  "%5EGSPC",
-    "^IXIC":  "%5EIXIC",
-    "^GDAXI": "%5EGDAXI",
+    "^FCHI":  "FCHI",
+    "^GSPC":  "GSPC",
+    "^IXIC":  "IXIC",
+    "^GDAXI": "GDAXI",
     "MC.PA":  "MC.PA",
     "AIR.PA": "AIR.PA",
     "TTE.PA": "TTE.PA",
@@ -179,52 +179,36 @@ def get_crypto_prices():
         return {}
 
 def get_stock_price(ticker):
-    """Récupère les données via Financial Modeling Prep"""
+    """Récupère les données via FMP endpoint gratuit (historical-price-full)"""
     fmp_ticker = FMP_TICKER_MAP.get(ticker, ticker)
     try:
         r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/quote/{fmp_ticker}",
-            params={"apikey": FMP_KEY},
+            f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_ticker}",
+            params={"apikey": FMP_KEY, "timeseries": 7},
             timeout=15
         )
         r.raise_for_status()
         data = r.json()
+        hist = data.get("historical", [])
 
-        # Log pour debug
-        print(f"FMP {ticker} → {fmp_ticker} : {str(data)[:120]}")
+        print(f"FMP {ticker} → {fmp_ticker} : {len(hist)} entrées")
 
-        if not data or not isinstance(data, list) or len(data) == 0:
+        if len(hist) < 2:
             return None
 
-        d = data[0]
-        price    = float(d.get("price") or 0)
-        change1d = float(d.get("changesPercentage") or 0)
-        high     = float(d.get("dayHigh") or price)
-        low      = float(d.get("dayLow") or price)
+        p_today = float(hist[0]["close"])
+        p_prev  = float(hist[1]["close"])
+        p_5d    = float(hist[min(4, len(hist)-1)]["close"])
+        high    = float(hist[0]["high"])
+        low     = float(hist[0]["low"])
 
-        if price == 0:
+        if p_today == 0:
             return None
-
-        # Variation 5j
-        change5d = 0
-        try:
-            r2 = requests.get(
-                f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_ticker}",
-                params={"apikey": FMP_KEY, "timeseries": 7},
-                timeout=15
-            )
-            if r2.ok:
-                hist = r2.json().get("historical", [])
-                if len(hist) >= 5:
-                    p5 = float(hist[4]["close"])
-                    change5d = ((price - p5) / p5) * 100
-        except:
-            pass
 
         return {
-            "price":     price,
-            "change_1d": change1d,
-            "change_5d": change5d,
+            "price":     p_today,
+            "change_1d": ((p_today - p_prev) / p_prev) * 100,
+            "change_5d": ((p_today - p_5d)   / p_5d)   * 100,
             "high":      high,
             "low":       low,
         }
