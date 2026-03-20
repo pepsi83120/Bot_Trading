@@ -13,7 +13,6 @@ from datetime import datetime
 BOT_TOKEN   = os.environ.get("BOT_TOKEN")
 ADMIN_ID    = int(os.environ.get("ADMIN_ID", "0"))
 REPORT_HOUR = os.environ.get("REPORT_HOUR", "08:00")
-FMP_KEY     = os.environ.get("FMP_KEY", "demo")
 
 if not BOT_TOKEN:
     raise ValueError("❌ Variable BOT_TOKEN manquante !")
@@ -86,19 +85,6 @@ ALIAS = {
     "TOTAL":     "TTE.PA",
     "BNP":       "BNP.PA",
     "SCHNEIDER": "SU.PA",
-}
-
-# FMP historical endpoint : on enlève le ^ pour les indices
-FMP_TICKER_MAP = {
-    "^FCHI":  "FCHI",
-    "^GSPC":  "GSPC",
-    "^IXIC":  "IXIC",
-    "^GDAXI": "GDAXI",
-    "MC.PA":  "MC.PA",
-    "AIR.PA": "AIR.PA",
-    "TTE.PA": "TTE.PA",
-    "BNP.PA": "BNP.PA",
-    "SU.PA":  "SU.PA",
 }
 
 def resolve(symbol):
@@ -179,28 +165,63 @@ def get_crypto_prices():
         return {}
 
 def get_stock_price(ticker):
-    """Récupère les données via FMP endpoint gratuit (historical-price-full)"""
-    fmp_ticker = FMP_TICKER_MAP.get(ticker, ticker)
+    """Récupère les données via stooq.com — gratuit, sans clé API"""
+    # Convertir les tickers au format stooq
+    stooq_map = {
+        "^FCHI":  "^fchi",
+        "^GSPC":  "^spx",
+        "^IXIC":  "^ndx",
+        "^GDAXI": "^dax",
+        "MC.PA":  "mc.fr",
+        "AIR.PA": "air.fr",
+        "TTE.PA": "tte.fr",
+        "BNP.PA": "bnp.fr",
+        "SU.PA":  "su.fr",
+        "AAPL":   "aapl.us",
+        "TSLA":   "tsla.us",
+        "NVDA":   "nvda.us",
+        "MSFT":   "msft.us",
+        "GOOGL":  "googl.us",
+    }
+    stooq_ticker = stooq_map.get(ticker, ticker.lower() + ".us")
     try:
         r = requests.get(
-            f"https://financialmodelingprep.com/api/v3/historical-price-full/{fmp_ticker}",
-            params={"apikey": FMP_KEY, "timeseries": 7},
+            f"https://stooq.com/q/d/l/",
+            params={
+                "s": stooq_ticker,
+                "i": "d",
+            },
+            headers={"User-Agent": "Mozilla/5.0"},
             timeout=15
         )
         r.raise_for_status()
-        data = r.json()
-        hist = data.get("historical", [])
+        lines = r.text.strip().split("\n")
+        print(f"Stooq {ticker} → {stooq_ticker} : {len(lines)} lignes")
 
-        print(f"FMP {ticker} → {fmp_ticker} : {len(hist)} entrées")
-
-        if len(hist) < 2:
+        # Format CSV: Date,Open,High,Low,Close,Volume
+        if len(lines) < 3:
             return None
 
-        p_today = float(hist[0]["close"])
-        p_prev  = float(hist[1]["close"])
-        p_5d    = float(hist[min(4, len(hist)-1)]["close"])
-        high    = float(hist[0]["high"])
-        low     = float(hist[0]["low"])
+        # Prendre les 7 dernières lignes de données
+        data_lines = [l for l in lines[1:] if l.strip()]
+        if len(data_lines) < 2:
+            return None
+
+        def parse_line(line):
+            parts = line.split(",")
+            return {
+                "close": float(parts[4]),
+                "high":  float(parts[2]),
+                "low":   float(parts[3]),
+            }
+
+        latest = parse_line(data_lines[-1])
+        prev   = parse_line(data_lines[-2])
+        old5   = parse_line(data_lines[max(0, len(data_lines)-6)])
+
+        p_today = latest["close"]
+        p_prev  = prev["close"]
+        p_5d    = old5["close"]
 
         if p_today == 0:
             return None
@@ -209,11 +230,11 @@ def get_stock_price(ticker):
             "price":     p_today,
             "change_1d": ((p_today - p_prev) / p_prev) * 100,
             "change_5d": ((p_today - p_5d)   / p_5d)   * 100,
-            "high":      high,
-            "low":       low,
+            "high":      latest["high"],
+            "low":       latest["low"],
         }
     except Exception as e:
-        print(f"Erreur FMP ({ticker}/{fmp_ticker}) : {e}")
+        print(f"Erreur Stooq ({ticker}/{stooq_ticker}) : {e}")
         return None
 
 
