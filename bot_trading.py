@@ -49,19 +49,13 @@ CRYPTO_MAP = {
     "DOT":  "polkadot",
 }
 
-# ── Actions & Indices (FMP) ────────────────────────────────
+# ── Actions & Indices ─────────────────────────────────────
 YAHOO_ASSETS = {
     "AAPL":   "🍎 Apple",
     "TSLA":   "🚗 Tesla",
     "NVDA":   "🖥️ NVIDIA",
     "MSFT":   "🪟 Microsoft",
     "GOOGL":  "🔍 Alphabet",
-    "MC.PA":  "👜 LVMH",
-    "AIR.PA": "✈️ Airbus",
-    "TTE.PA": "🛢️ TotalEnergies",
-    "BNP.PA": "🏦 BNP Paribas",
-    "SU.PA":  "⚡ Schneider Electric",
-    "^FCHI":  "🇫🇷 CAC 40",
     "^GSPC":  "🇺🇸 S&P 500",
     "^IXIC":  "💻 Nasdaq",
     "^GDAXI": "🇩🇪 DAX",
@@ -69,8 +63,6 @@ YAHOO_ASSETS = {
 
 # Alias → ticker réel
 ALIAS = {
-    "CAC":       "^FCHI",
-    "CAC40":     "^FCHI",
     "SP500":     "^GSPC",
     "SPX":       "^GSPC",
     "NASDAQ":    "^IXIC",
@@ -80,11 +72,6 @@ ALIAS = {
     "NVIDIA":    "NVDA",
     "MICROSOFT": "MSFT",
     "GOOGLE":    "GOOGL",
-    "LVMH":      "MC.PA",
-    "AIRBUS":    "AIR.PA",
-    "TOTAL":     "TTE.PA",
-    "BNP":       "BNP.PA",
-    "SCHNEIDER": "SU.PA",
 }
 
 def resolve(symbol):
@@ -165,17 +152,11 @@ def get_crypto_prices():
         return {}
 
 def get_stock_price(ticker):
-    """Récupère les données via stooq.com — gratuit, sans clé API"""
+    """Récupère les données via stooq.com"""
     stooq_map = {
-        "^FCHI":  "^fchi",
         "^GSPC":  "^spx",
         "^IXIC":  "^ndx",
         "^GDAXI": "^dax",
-        "MC.PA":  "mc.fr",
-        "AIR.PA": "air.fr",
-        "TTE.PA": "tte.fr",
-        "BNP.PA": "bnp.fr",
-        "SU.PA":  "su.fr",
         "AAPL":   "aapl.us",
         "TSLA":   "tsla.us",
         "NVDA":   "nvda.us",
@@ -193,47 +174,20 @@ def get_stock_price(ticker):
         r.raise_for_status()
         lines = r.text.strip().split("\n")
         print(f"Stooq {ticker} → {stooq_ticker} : {len(lines)} lignes")
-
         data_lines = [l for l in lines[1:] if l.strip()]
         if len(data_lines) < 2:
-            # Si .fr ne marche pas, essayer sans suffixe
-            if ".fr" in stooq_ticker:
-                base = stooq_ticker.replace(".fr", "")
-                for suffix in [".eu", ".de", ""]:
-                    r2 = requests.get(
-                        "https://stooq.com/q/d/l/",
-                        params={"s": base + suffix, "i": "d"},
-                        headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=15
-                    )
-                    lines2 = r2.text.strip().split("\n")
-                    data_lines2 = [l for l in lines2[1:] if l.strip()]
-                    if len(data_lines2) >= 2:
-                        print(f"  → Fallback OK: {base + suffix}")
-                        data_lines = data_lines2
-                        break
-            if len(data_lines) < 2:
-                return None
+            return None
 
         def parse_line(line):
             parts = line.split(",")
-            return {
-                "close": float(parts[4]),
-                "high":  float(parts[2]),
-                "low":   float(parts[3]),
-            }
+            return {"close": float(parts[4]), "high": float(parts[2]), "low": float(parts[3])}
 
         latest = parse_line(data_lines[-1])
         prev   = parse_line(data_lines[-2])
         old5   = parse_line(data_lines[max(0, len(data_lines)-6)])
-
-        p_today = latest["close"]
-        p_prev  = prev["close"]
-        p_5d    = old5["close"]
-
+        p_today, p_prev, p_5d = latest["close"], prev["close"], old5["close"]
         if p_today == 0:
             return None
-
         return {
             "price":     p_today,
             "change_1d": ((p_today - p_prev) / p_prev) * 100,
@@ -242,7 +196,7 @@ def get_stock_price(ticker):
             "low":       latest["low"],
         }
     except Exception as e:
-        print(f"Erreur Stooq ({ticker}/{stooq_ticker}) : {e}")
+        print(f"Erreur Stooq ({ticker}) : {e}")
         return None
 
 
