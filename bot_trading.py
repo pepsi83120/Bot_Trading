@@ -132,36 +132,59 @@ def clear_user_alerts(user_id):
 #  DONNÉES DE MARCHÉ
 # ════════════════════════════════════════════════════════════
 
+# Cache pour éviter trop de requêtes CoinGecko
+_cache = {}
+_cache_time = {}
+CACHE_DURATION = 120  # 2 minutes
+
+def get_from_cache(key):
+    if key in _cache and time.time() - _cache_time.get(key, 0) < CACHE_DURATION:
+        return _cache[key]
+    return None
+
+def set_cache(key, value):
+    _cache[key] = value
+    _cache_time[key] = time.time()
+
 def get_crypto_prices():
+    cached = get_from_cache("crypto_prices")
+    if cached:
+        return cached
     ids = ",".join(CRYPTO_ASSETS.keys())
-    for attempt in range(3):
-        try:
-            r = requests.get(
-                "https://api.coingecko.com/api/v3/coins/markets",
-                params={
-                    "vs_currency": "usd",
-                    "ids": ids,
-                    "order": "market_cap_desc",
-                    "price_change_percentage": "1h,24h,7d"
-                },
-                timeout=20
-            )
-            r.raise_for_status()
-            return {c["id"]: c for c in r.json()}
-        except Exception as e:
-            print(f"Erreur CoinGecko tentative {attempt+1}: {e}")
-    return {}
+    try:
+        r = requests.get(
+            "https://api.coingecko.com/api/v3/coins/markets",
+            params={
+                "vs_currency": "usd",
+                "ids": ids,
+                "order": "market_cap_desc",
+                "price_change_percentage": "1h,24h,7d"
+            },
+            timeout=20
+        )
+        r.raise_for_status()
+        data = {c["id"]: c for c in r.json()}
+        set_cache("crypto_prices", data)
+        return data
+    except Exception as e:
+        print(f"Erreur CoinGecko : {e}")
+        return {}
 
 def get_crypto_history(coin_id, days=60):
-    """Historique des prix pour les indicateurs techniques"""
+    cache_key = f"history_{coin_id}"
+    cached = get_from_cache(cache_key)
+    if cached:
+        return cached
     try:
+        time.sleep(1)  # Délai pour éviter le rate limit
         r = requests.get(
             f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
             params={"vs_currency": "usd", "days": days, "interval": "daily"},
-            timeout=10
+            timeout=20
         )
         r.raise_for_status()
         prices = [p[1] for p in r.json().get("prices", [])]
+        set_cache(cache_key, prices)
         return prices
     except Exception as e:
         print(f"Erreur historique CoinGecko ({coin_id}): {e}")
