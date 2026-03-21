@@ -166,7 +166,6 @@ def get_crypto_prices():
 
 def get_stock_price(ticker):
     """Récupère les données via stooq.com — gratuit, sans clé API"""
-    # Convertir les tickers au format stooq
     stooq_map = {
         "^FCHI":  "^fchi",
         "^GSPC":  "^spx",
@@ -186,11 +185,8 @@ def get_stock_price(ticker):
     stooq_ticker = stooq_map.get(ticker, ticker.lower() + ".us")
     try:
         r = requests.get(
-            f"https://stooq.com/q/d/l/",
-            params={
-                "s": stooq_ticker,
-                "i": "d",
-            },
+            "https://stooq.com/q/d/l/",
+            params={"s": stooq_ticker, "i": "d"},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=15
         )
@@ -198,14 +194,26 @@ def get_stock_price(ticker):
         lines = r.text.strip().split("\n")
         print(f"Stooq {ticker} → {stooq_ticker} : {len(lines)} lignes")
 
-        # Format CSV: Date,Open,High,Low,Close,Volume
-        if len(lines) < 3:
-            return None
-
-        # Prendre les 7 dernières lignes de données
         data_lines = [l for l in lines[1:] if l.strip()]
         if len(data_lines) < 2:
-            return None
+            # Si .fr ne marche pas, essayer sans suffixe
+            if ".fr" in stooq_ticker:
+                base = stooq_ticker.replace(".fr", "")
+                for suffix in [".eu", ".de", ""]:
+                    r2 = requests.get(
+                        "https://stooq.com/q/d/l/",
+                        params={"s": base + suffix, "i": "d"},
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=15
+                    )
+                    lines2 = r2.text.strip().split("\n")
+                    data_lines2 = [l for l in lines2[1:] if l.strip()]
+                    if len(data_lines2) >= 2:
+                        print(f"  → Fallback OK: {base + suffix}")
+                        data_lines = data_lines2
+                        break
+            if len(data_lines) < 2:
+                return None
 
         def parse_line(line):
             parts = line.split(",")
