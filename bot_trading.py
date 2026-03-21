@@ -462,7 +462,7 @@ def send_daily_report():
     if not cp and not yp: return
     msg = build_market_msg(cp, yp)
     for uid in recipients:
-        try: bot.send_message(uid, msg, parse_mode="Markdown")
+        try: send_long(uid, msg)
         except Exception as e: print(f"Erreur envoi {uid}: {e}")
     print(f"[{datetime.now().strftime('%H:%M')}] Rapport envoyé à {len(recipients)} utilisateurs")
 
@@ -470,6 +470,29 @@ def send_daily_report():
 # ════════════════════════════════════════════════════════════
 #  COMMANDES
 # ════════════════════════════════════════════════════════════
+
+def send_long(chat_id, text, reply_to=None):
+    """Envoie un message long découpé en morceaux de 4000 chars max"""
+    MAX = 4000
+    chunks = []
+    current = ""
+    for line in text.split("\n"):
+        if len(current) + len(line) + 1 > MAX:
+            if current:
+                chunks.append(current)
+            current = line
+        else:
+            current += ("\n" if current else "") + line
+    if current:
+        chunks.append(current)
+    for i, chunk in enumerate(chunks):
+        try:
+            if i == 0 and reply_to:
+                bot.reply_to(reply_to, chunk, parse_mode="Markdown")
+            else:
+                bot.send_message(chat_id, chunk, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Erreur envoi chunk {i}: {e}")
 
 @bot.message_handler(commands=["start", "help"])
 def cmd_start(message):
@@ -499,7 +522,7 @@ def cmd_marche(message):
     yp = {k: v for k, v in yp.items() if v}
     if not cp and not yp:
         bot.reply_to(message, "❌ Erreur API. Réessaie."); return
-    bot.reply_to(message, build_market_msg(cp, yp), parse_mode="Markdown")
+    send_long(message.chat.id, build_market_msg(cp, yp), reply_to=message)
 
 @bot.message_handler(commands=["signaux"])
 def cmd_signaux(message):
