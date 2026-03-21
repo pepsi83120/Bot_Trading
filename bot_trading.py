@@ -657,7 +657,6 @@ def handle_unknown(message):
 # ════════════════════════════════════════════════════════════
 
 def run_scheduler():
-    schedule.every().day.at(REPORT_HOUR).do(send_daily_report)
     schedule.every(5).minutes.do(check_alerts)
     while True:
         schedule.run_pending()
