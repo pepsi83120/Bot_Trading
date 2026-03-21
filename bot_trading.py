@@ -134,22 +134,23 @@ def clear_user_alerts(user_id):
 
 def get_crypto_prices():
     ids = ",".join(CRYPTO_ASSETS.keys())
-    try:
-        r = requests.get(
-            "https://api.coingecko.com/api/v3/coins/markets",
-            params={
-                "vs_currency": "usd",
-                "ids": ids,
-                "order": "market_cap_desc",
-                "price_change_percentage": "1h,24h,7d"
-            },
-            timeout=10
-        )
-        r.raise_for_status()
-        return {c["id"]: c for c in r.json()}
-    except Exception as e:
-        print(f"Erreur CoinGecko : {e}")
-        return {}
+    for attempt in range(3):
+        try:
+            r = requests.get(
+                "https://api.coingecko.com/api/v3/coins/markets",
+                params={
+                    "vs_currency": "usd",
+                    "ids": ids,
+                    "order": "market_cap_desc",
+                    "price_change_percentage": "1h,24h,7d"
+                },
+                timeout=20
+            )
+            r.raise_for_status()
+            return {c["id"]: c for c in r.json()}
+        except Exception as e:
+            print(f"Erreur CoinGecko tentative {attempt+1}: {e}")
+    return {}
 
 def get_crypto_history(coin_id, days=60):
     """Historique des prix pour les indicateurs techniques"""
@@ -759,20 +760,26 @@ def cmd_prix(message):
     # Crypto
     if symbol in CRYPTO_ASSETS:
         bot.reply_to(message, "⏳ Récupération...")
-        d = get_crypto_prices().get(symbol)
+        # Essayer jusqu'à 3 fois
+        d = None
+        for attempt in range(3):
+            cp = get_crypto_prices()
+            d = cp.get(symbol)
+            if d:
+                break
         if not d:
-            bot.reply_to(message, "❌ Données indisponibles."); return
+            bot.reply_to(message, "❌ CoinGecko indisponible, réessaie dans 1 minute."); return
         history = get_crypto_history(symbol, days=60)
-        bot.reply_to(message, format_crypto_card(CRYPTO_ASSETS[symbol], d, history), parse_mode="Markdown"); return
+        send_long(message.chat.id, format_crypto_card(CRYPTO_ASSETS[symbol], d, history), reply_to=message); return
 
     # Action / Indice
     if symbol in YAHOO_ASSETS or symbol.startswith("^"):
         bot.reply_to(message, "⏳ Récupération...")
         d = get_stock_price(symbol)
         if not d:
-            bot.reply_to(message, "❌ Données indisponibles."); return
+            bot.reply_to(message, "❌ Données indisponibles, réessaie dans 1 minute."); return
         label = YAHOO_ASSETS.get(symbol, symbol)
-        bot.reply_to(message, format_stock_card(label, symbol, d), parse_mode="Markdown"); return
+        send_long(message.chat.id, format_stock_card(label, symbol, d), reply_to=message); return
 
     bot.reply_to(message,
         f"❓ Actif inconnu : *{keyword}*\n\n"
