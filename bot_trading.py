@@ -171,27 +171,11 @@ def get_crypto_prices():
         return {}
 
 def get_crypto_history(coin_id, days=60):
-    cache_key = f"history_{coin_id}"
-    cached = get_from_cache(cache_key)
-    if cached:
-        return cached
-    try:
-        time.sleep(1)  # Délai pour éviter le rate limit
-        r = requests.get(
-            f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
-            params={"vs_currency": "usd", "days": days, "interval": "daily"},
-            timeout=20
-        )
-        r.raise_for_status()
-        prices = [p[1] for p in r.json().get("prices", [])]
-        set_cache(cache_key, prices)
-        return prices
-    except Exception as e:
-        print(f"Erreur historique CoinGecko ({coin_id}): {e}")
-        return []
+    """Désactivé pour éviter le rate limit CoinGecko — on utilise les données de base"""
+    return []
 
 def get_stock_price(ticker):
-    """Récupère les données + historique 60j via stooq.com"""
+    """Récupère les données via stooq.com avec plage de dates explicite"""
     stooq_map = {
         "^GSPC":  "^spx",
         "^IXIC":  "^ndx",
@@ -203,29 +187,44 @@ def get_stock_price(ticker):
         "GOOGL":  "googl.us",
     }
     stooq_ticker = stooq_map.get(ticker, ticker.lower() + ".us")
+
+    # Calcul des dates : 90 jours en arrière
+    from datetime import timedelta
+    today = datetime.now()
+    d_from = (today - timedelta(days=90)).strftime("%Y%m%d")
+    d_to   = today.strftime("%Y%m%d")
+
     try:
         r = requests.get(
             "https://stooq.com/q/d/l/",
-            params={"s": stooq_ticker, "i": "d"},
-            headers={"User-Agent": "Mozilla/5.0"},
+            params={"s": stooq_ticker, "d1": d_from, "d2": d_to, "i": "d"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
             timeout=15
         )
         r.raise_for_status()
         lines = r.text.strip().split("\n")
         print(f"Stooq {ticker} → {stooq_ticker} : {len(lines)} lignes")
-        data_lines = [l for l in lines[1:] if l.strip()]
+        data_lines = [l for l in lines[1:] if l.strip() and "No data" not in l]
         if len(data_lines) < 2:
             return None
 
         def parse_line(line):
             parts = line.split(",")
-            return {
-                "close": float(parts[4]),
-                "high":  float(parts[2]),
-                "low":   float(parts[3]),
-            }
+            if len(parts) < 5:
+                return None
+            try:
+                return {
+                    "close": float(parts[4]),
+                    "high":  float(parts[2]),
+                    "low":   float(parts[3]),
+                }
+            except:
+                return None
 
-        parsed = [parse_line(l) for l in data_lines]
+        parsed = [p for p in (parse_line(l) for l in data_lines) if p]
+        if len(parsed) < 2:
+            return None
+
         closes = [p["close"] for p in parsed]
         highs  = [p["high"]  for p in parsed]
         lows   = [p["low"]   for p in parsed]
