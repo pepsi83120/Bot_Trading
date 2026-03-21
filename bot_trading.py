@@ -151,8 +151,23 @@ def get_crypto_prices():
         print(f"Erreur CoinGecko : {e}")
         return {}
 
+def get_crypto_history(coin_id, days=60):
+    """Historique des prix pour les indicateurs techniques"""
+    try:
+        r = requests.get(
+            f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart",
+            params={"vs_currency": "usd", "days": days, "interval": "daily"},
+            timeout=10
+        )
+        r.raise_for_status()
+        prices = [p[1] for p in r.json().get("prices", [])]
+        return prices
+    except Exception as e:
+        print(f"Erreur historique CoinGecko ({coin_id}): {e}")
+        return []
+
 def get_stock_price(ticker):
-    """Récupère les données via stooq.com"""
+    """Récupère les données + historique 60j via stooq.com"""
     stooq_map = {
         "^GSPC":  "^spx",
         "^IXIC":  "^ndx",
@@ -180,20 +195,33 @@ def get_stock_price(ticker):
 
         def parse_line(line):
             parts = line.split(",")
-            return {"close": float(parts[4]), "high": float(parts[2]), "low": float(parts[3])}
+            return {
+                "close": float(parts[4]),
+                "high":  float(parts[2]),
+                "low":   float(parts[3]),
+            }
 
-        latest = parse_line(data_lines[-1])
-        prev   = parse_line(data_lines[-2])
-        old5   = parse_line(data_lines[max(0, len(data_lines)-6)])
-        p_today, p_prev, p_5d = latest["close"], prev["close"], old5["close"]
+        parsed = [parse_line(l) for l in data_lines]
+        closes = [p["close"] for p in parsed]
+        highs  = [p["high"]  for p in parsed]
+        lows   = [p["low"]   for p in parsed]
+
+        p_today = closes[-1]
+        p_prev  = closes[-2]
+        p_5d    = closes[max(0, len(closes)-6)]
+
         if p_today == 0:
             return None
+
         return {
             "price":     p_today,
             "change_1d": ((p_today - p_prev) / p_prev) * 100,
             "change_5d": ((p_today - p_5d)   / p_5d)   * 100,
-            "high":      latest["high"],
-            "low":       latest["low"],
+            "high":      highs[-1],
+            "low":       lows[-1],
+            "closes":    closes,
+            "highs":     highs,
+            "lows":      lows,
         }
     except Exception as e:
         print(f"Erreur Stooq ({ticker}) : {e}")
@@ -201,74 +229,168 @@ def get_stock_price(ticker):
 
 
 # ════════════════════════════════════════════════════════════
-#  SIGNAUX & ANALYSE
+#  INDICATEURS TECHNIQUES RÉELS
 # ════════════════════════════════════════════════════════════
 
-def signal_crypto(c1h, c24h, c7d):
-    s = c1h * 0.5 + c24h * 0.3 + c7d * 0.2
-    if s >= 2.5:  return "STRONG_BUY"
-    if s >= 0.8:  return "BUY"
-    if s <= -2.5: return "STRONG_SELL"
-    if s <= -0.8: return "SELL"
-    return "NEUTRE"
+def calc_rsi(closes, period=14):
+    """RSI réel sur les N derniers prix de clôture"""
+    if len(closes) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        diff = closes[-i] - closes[-i-1]
+        (gains if diff > 0 else losses).append(abs(diff))
+    avg_gain = sum(gains) / period if gains else 0
+    avg_loss = sum(losses) / period if losses else 0.0001
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
-def signal_stock(c1d, c5d):
-    s = c1d * 0.6 + c5d * 0.4
-    if s >= 2.0:  return "STRONG_BUY"
-    if s >= 0.5:  return "BUY"
-    if s <= -2.0: return "STRONG_SELL"
-    if s <= -0.5: return "SELL"
-    return "NEUTRE"
+def calc_ma(closes, period):
+    """Moyenne mobile simple"""
+    if len(closes) < period:
+        return None
+    return sum(closes[-period:]) / period
+
+def calc_support_resistance(highs, lows, closes, price):
+    """
+    Support = plus bas récent sur 20 jours
+    Résistance = plus haut récent sur 20 jours
+    Ajustés par rapport au prix actuel
+    """
+    window = min(20, len(highs))
+    recent_highs = highs[-window:]
+    recent_lows  = lows[-window:]
+
+    resistance = max(recent_highs)
+    support    = min(recent_lows)
+
+    # Si le prix est déjà au-dessus de la résistance, on prend le 2e niveau
+    if price >= resistance * 0.99:
+        resistance = resistance * 1.03
+
+    # Si le prix est en dessous du support, on ajuste
+    if price <= support * 1.01:
+        support = support * 0.97
+
+    return round(support, 4), round(resistance, 4)
+
+def calc_fibonacci(high, low):
+    """Niveaux de Fibonacci 38.2%, 50%, 61.8%"""
+    diff = high - low
+    return {
+        "0.382": round(high - diff * 0.382, 4),
+        "0.500": round(high - diff * 0.500, 4),
+        "0.618": round(high - diff * 0.618, 4),
+    }
+
+def analyse_technique(closes, highs, lows, price):
+    """
+    Analyse complète : RSI + MA + Support/Résistance + Signal
+    Retourne un dict avec tous les niveaux calculés
+    """
+    rsi  = calc_rsi(closes)
+    ma20 = calc_ma(closes, 20)
+    ma50 = calc_ma(closes, 50)
+    support, resistance = calc_support_resistance(highs, lows, closes, price)
+    fib = calc_fibonacci(max(highs[-20:]) if len(highs) >= 20 else max(highs),
+                         min(lows[-20:])  if len(lows)  >= 20 else min(lows))
+
+    # Signal basé sur RSI + position par rapport aux MAs
+    score = 0
+    raisons = []
+
+    if rsi is not None:
+        if rsi < 30:
+            score += 2
+            raisons.append(f"RSI {rsi:.0f} — zone de survente (signal achat)")
+        elif rsi < 45:
+            score += 1
+            raisons.append(f"RSI {rsi:.0f} — faiblesse, rebond possible")
+        elif rsi > 70:
+            score -= 2
+            raisons.append(f"RSI {rsi:.0f} — zone de surachat (signal vente)")
+        elif rsi > 55:
+            score -= 1
+            raisons.append(f"RSI {rsi:.0f} — momentum haussier")
+        else:
+            raisons.append(f"RSI {rsi:.0f} — zone neutre")
+
+    if ma20 and ma50:
+        if price > ma20 > ma50:
+            score += 2
+            raisons.append(f"Prix au-dessus MA20 & MA50 — tendance haussière")
+        elif price < ma20 < ma50:
+            score -= 2
+            raisons.append(f"Prix sous MA20 & MA50 — tendance baissière")
+        elif price > ma20:
+            score += 1
+            raisons.append(f"Prix au-dessus MA20 — court terme positif")
+        else:
+            score -= 1
+            raisons.append(f"Prix sous MA20 — court terme négatif")
+
+    # Distance au support/résistance
+    dist_support    = ((price - support) / price) * 100
+    dist_resistance = ((resistance - price) / price) * 100
+
+    if dist_support < 2:
+        score += 1
+        raisons.append(f"Prix proche du support — opportunité d'achat")
+    if dist_resistance < 2:
+        score -= 1
+        raisons.append(f"Prix proche de la résistance — prudence")
+
+    # Signal final
+    if score >= 3:    sig = "STRONG_BUY"
+    elif score >= 1:  sig = "BUY"
+    elif score <= -3: sig = "STRONG_SELL"
+    elif score <= -1: sig = "SELL"
+    else:             sig = "NEUTRE"
+
+    # Stop-loss = sous le support (-1% de marge)
+    stop_loss  = round(support * 0.99, 4)
+    # Take profit = vers la résistance
+    take_profit = round(resistance * 0.99, 4)
+    # Zone d'entrée = prix actuel ou légèrement sous
+    entry = round(price * 0.99 if "BUY" in sig else price * 1.01, 4)
+
+    # Ratio risque/rendement
+    risk   = abs(price - stop_loss)
+    reward = abs(take_profit - price)
+    rr     = round(reward / risk, 2) if risk > 0 else 0
+
+    return {
+        "signal":      sig,
+        "rsi":         round(rsi, 1) if rsi else None,
+        "ma20":        round(ma20, 4) if ma20 else None,
+        "ma50":        round(ma50, 4) if ma50 else None,
+        "support":     support,
+        "resistance":  resistance,
+        "fib":         fib,
+        "entry":       entry,
+        "stop_loss":   stop_loss,
+        "take_profit": take_profit,
+        "rr_ratio":    rr,
+        "raisons":     raisons,
+        "score":       score,
+    }
 
 def format_signal(sig):
     return {
-        "STRONG_BUY":  "🟢 ACHETER FORT",
-        "BUY":         "🟩 ACHETER",
-        "STRONG_SELL": "🔴 VENDRE FORT",
-        "SELL":        "🟥 VENDRE",
-        "NEUTRE":      "🟡 ATTENDRE",
-    }.get(sig, "🟡 ATTENDRE")
+        "STRONG_BUY":  "🟢 FORT ACHAT",
+        "BUY":         "🟩 ACHAT",
+        "STRONG_SELL": "🔴 FORT VENTE",
+        "SELL":        "🟥 VENTE",
+        "NEUTRE":      "🟡 NEUTRE",
+    }.get(sig, "🟡 NEUTRE")
 
-def risque(volatility):
-    if volatility >= 6: return "🔴 ÉLEVÉ"
-    if volatility >= 3: return "🟡 MODÉRÉ"
-    return "🟢 FAIBLE"
-
-def conseil_invest(sig, price, is_index=False):
-    """Retourne une phrase de conseil simple"""
-    if "BUY" in sig:
-        if is_index: return "📥 Bon moment pour entrer progressivement"
-        return "📥 Achetez en plusieurs fois pour lisser le risque"
-    if "SELL" in sig:
-        return "📤 Réduisez votre position ou attendez un rebond"
-    return "⏳ Attendez une confirmation avant d'entrer"
-
-def calcul_niveaux(price, sig):
-    """Calcule entrée, objectif et stop-loss"""
-    if "STRONG_BUY" in sig:
-        entry = price * 0.99
-        obj   = price * 1.15
-        stop  = price * 0.93
-    elif "BUY" in sig:
-        entry = price * 0.985
-        obj   = price * 1.08
-        stop  = price * 0.95
-    elif "STRONG_SELL" in sig:
-        entry = price * 1.01
-        obj   = price * 0.88
-        stop  = price * 1.07
-    elif "SELL" in sig:
-        entry = price * 1.005
-        obj   = price * 0.94
-        stop  = price * 1.04
-    else:
-        entry = price * 0.985
-        obj   = price * 1.03
-        stop  = price * 0.96
-    return entry, obj, stop
+def risque_label(rsi, dist_support):
+    if rsi and (rsi > 70 or rsi < 30): return "🔴 ÉLEVÉ"
+    if dist_support < 3: return "🟢 FAIBLE"
+    return "🟡 MODÉRÉ"
 
 def fmt_price(v, is_index=False):
-    return f"{v:,.0f} pts" if is_index else f"${v:,.2f}"
+    return f"{v:,.2f} pts" if is_index else f"${v:,.2f}"
 
 def fmt_pct(a, b):
     p = ((b - a) / a) * 100
@@ -282,52 +404,112 @@ def fmt(v):   return f"{'+'if v>=0 else ''}{v:.2f}%"
 #  CONSTRUCTION DES MESSAGES
 # ════════════════════════════════════════════════════════════
 
-def format_crypto_card(label, d):
+def format_crypto_card(label, d, history=None):
     c1h  = d.get("price_change_percentage_1h_in_currency") or 0
     c24h = d.get("price_change_percentage_24h_in_currency") or 0
     c7d  = d.get("price_change_percentage_7d_in_currency") or 0
     price = d["current_price"]
-    sig   = signal_crypto(c1h, c24h, c7d)
-    entry, obj, stop = calcul_niveaux(price, sig)
-    vol = abs(c1h) + abs(c24h) * 0.5 + abs(c7d) * 0.3
+    high24 = d.get("high_24h", price)
+    low24  = d.get("low_24h", price)
 
-    return (
-        f"*{label}* — ${price:,.4f}\n"
-        f"📊 1h {arrow(c1h)}{fmt(c1h)} | 24h {arrow(c24h)}{fmt(c24h)} | 7j {arrow(c7d)}{fmt(c7d)}\n"
-        f"🎯 *{format_signal(sig)}*\n"
-        f"⚠️ Risque : {risque(vol)}\n"
-        f"💡 {conseil_invest(sig, price)}\n"
-        f"📥 Acheter à : ~${entry:,.4f}\n"
-        f"🏹 Objectif : ~${obj:,.4f} ({fmt_pct(price, obj)})\n"
-        f"🛑 Stop-loss : ~${stop:,.4f} ({fmt_pct(price, stop)})"
-    )
+    if history and len(history) >= 20:
+        closes = history
+        highs  = closes  # CoinGecko ne donne que les closes en daily
+        lows   = closes
+        ana = analyse_technique(closes, highs, lows, price)
+    else:
+        # Fallback si pas d'historique
+        ana = {
+            "signal": "NEUTRE", "rsi": None, "ma20": None, "ma50": None,
+            "support": low24, "resistance": high24,
+            "entry": price * 0.99, "stop_loss": price * 0.95,
+            "take_profit": price * 1.08, "rr_ratio": 0,
+            "raisons": [], "fib": {}
+        }
+
+    sig = ana["signal"]
+    dist_support = ((price - ana["support"]) / price) * 100
+
+    lines = [
+        f"*{label}* — ${price:,.4f}",
+        f"📊 1h {arrow(c1h)}{fmt(c1h)} | 24h {arrow(c24h)}{fmt(c24h)} | 7j {arrow(c7d)}{fmt(c7d)}",
+        f"",
+        f"🎯 *Signal : {format_signal(sig)}*",
+        f"⚠️ Risque : {risque_label(ana['rsi'], dist_support)}",
+    ]
+    if ana["rsi"]:
+        lines.append(f"📉 RSI({14}) : {ana['rsi']}")
+    if ana["ma20"]:
+        lines.append(f"📈 MA20 : ${ana['ma20']:,.4f}" + (" ✅" if price > ana["ma20"] else " ❌"))
+    lines += [
+        f"",
+        f"🔴 Support : ${ana['support']:,.4f}",
+        f"🟢 Résistance : ${ana['resistance']:,.4f}",
+        f"",
+        f"📥 *Zone d'entrée : ${ana['entry']:,.4f}*",
+        f"🏹 *Take Profit : ${ana['take_profit']:,.4f}* ({fmt_pct(price, ana['take_profit'])})",
+        f"🛑 *Stop-Loss : ${ana['stop_loss']:,.4f}* ({fmt_pct(price, ana['stop_loss'])})",
+        f"⚖️ Ratio R/R : {ana['rr_ratio']}",
+    ]
+    if ana["raisons"]:
+        lines.append(f"\n💡 " + " | ".join(ana["raisons"][:2]))
+    return "\n".join(lines)
 
 def format_stock_card(label, ticker, d):
     c1d   = d["change_1d"]
     c5d   = d["change_5d"]
     price = d["price"]
-    idx   = ticker.startswith("^") or ticker in ("FCHI","GSPC","IXIC","GDAXI")
-    sig   = signal_stock(c1d, c5d)
-    entry, obj, stop = calcul_niveaux(price, sig)
-    vol = abs(c1d) * 0.7 + abs(c5d) * 0.3
+    idx   = ticker.startswith("^")
+    closes = d.get("closes", [])
+    highs  = d.get("highs", [])
+    lows   = d.get("lows", [])
 
-    return (
-        f"*{label}* — {fmt_price(price, idx)}\n"
-        f"📊 Auj. {arrow(c1d)}{fmt(c1d)} | Sem. {arrow(c5d)}{fmt(c5d)}\n"
-        f"📈 Haut: {fmt_price(d['high'], idx)} | Bas: {fmt_price(d['low'], idx)}\n"
-        f"🎯 *{format_signal(sig)}*\n"
-        f"⚠️ Risque : {risque(vol)}\n"
-        f"💡 {conseil_invest(sig, price, idx)}\n"
-        f"📥 Acheter à : ~{fmt_price(entry, idx)}\n"
-        f"🏹 Objectif : ~{fmt_price(obj, idx)} ({fmt_pct(price, obj)})\n"
-        f"🛑 Stop-loss : ~{fmt_price(stop, idx)} ({fmt_pct(price, stop)})"
-    )
+    if len(closes) >= 20:
+        ana = analyse_technique(closes, highs, lows, price)
+    else:
+        ana = {
+            "signal": "NEUTRE", "rsi": None, "ma20": None, "ma50": None,
+            "support": d["low"], "resistance": d["high"],
+            "entry": price * 0.99, "stop_loss": price * 0.95,
+            "take_profit": price * 1.08, "rr_ratio": 0,
+            "raisons": [], "fib": {}
+        }
+
+    sig = ana["signal"]
+    dist_support = ((price - ana["support"]) / price) * 100
+    fp = lambda v: fmt_price(v, idx)
+
+    lines = [
+        f"*{label}* — {fp(price)}",
+        f"📊 Auj. {arrow(c1d)}{fmt(c1d)} | Sem. {arrow(c5d)}{fmt(c5d)}",
+        f"📈 Haut: {fp(d['high'])} | Bas: {fp(d['low'])}",
+        f"",
+        f"🎯 *Signal : {format_signal(sig)}*",
+        f"⚠️ Risque : {risque_label(ana['rsi'], dist_support)}",
+    ]
+    if ana["rsi"]:
+        lines.append(f"📉 RSI(14) : {ana['rsi']}")
+    if ana["ma20"]:
+        lines.append(f"📈 MA20 : {fp(ana['ma20'])}" + (" ✅" if price > ana["ma20"] else " ❌"))
+    if ana["ma50"]:
+        lines.append(f"📈 MA50 : {fp(ana['ma50'])}" + (" ✅" if price > ana["ma50"] else " ❌"))
+    lines += [
+        f"",
+        f"🔴 Support : {fp(ana['support'])}",
+        f"🟢 Résistance : {fp(ana['resistance'])}",
+        f"",
+        f"📥 *Zone d'entrée : {fp(ana['entry'])}*",
+        f"🏹 *Take Profit : {fp(ana['take_profit'])}* ({fmt_pct(price, ana['take_profit'])})",
+        f"🛑 *Stop-Loss : {fp(ana['stop_loss'])}* ({fmt_pct(price, ana['stop_loss'])})",
+        f"⚖️ Ratio R/R : {ana['rr_ratio']}",
+    ]
+    if ana["raisons"]:
+        lines.append(f"\n💡 " + " | ".join(ana["raisons"][:2]))
+    return "\n".join(lines)
 
 def build_market_msg(cp, yp):
     now = datetime.now().strftime("%d/%m/%Y à %Hh%M")
     parts = [f"📊 *RAPPORT DE MARCHÉ*\n_{now}_"]
-
-    # Macro
     parts.append(
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "🌍 *MACRO*\n"
@@ -335,15 +517,13 @@ def build_market_msg(cp, yp):
         "🏦 BCE : 2.65% · Baisse progressive\n"
         "📊 Contexte : favorable aux actifs risqués"
     )
-
-    # Crypto
     parts.append("━━━━━━━━━━━━━━━━━━━━━━\n🪙 *CRYPTO*")
     for cid, label in CRYPTO_ASSETS.items():
         d = cp.get(cid)
-        if d:
-            parts.append(format_crypto_card(label, d))
-
-    # Actions
+        if not d:
+            continue
+        history = get_crypto_history(cid, days=60)
+        parts.append(format_crypto_card(label, d, history))
     parts.append("━━━━━━━━━━━━━━━━━━━━━━\n📈 *ACTIONS & INDICES*")
     for ticker, label in YAHOO_ASSETS.items():
         d = yp.get(ticker)
@@ -351,7 +531,6 @@ def build_market_msg(cp, yp):
             parts.append(format_stock_card(label, ticker, d))
         else:
             parts.append(f"*{label}* — ⚠️ indisponible")
-
     parts.append(
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ _Pas de conseil en investissement. Capitaux à risque._"
@@ -537,7 +716,8 @@ def cmd_prix(message):
         d = get_crypto_prices().get(symbol)
         if not d:
             bot.reply_to(message, "❌ Données indisponibles."); return
-        bot.reply_to(message, format_crypto_card(CRYPTO_ASSETS[symbol], d), parse_mode="Markdown"); return
+        history = get_crypto_history(symbol, days=60)
+        bot.reply_to(message, format_crypto_card(CRYPTO_ASSETS[symbol], d, history), parse_mode="Markdown"); return
 
     # Action / Indice
     if symbol in YAHOO_ASSETS or symbol.startswith("^"):
