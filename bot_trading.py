@@ -285,94 +285,164 @@ def calc_fibonacci(high, low):
 
 def analyse_technique(closes, highs, lows, price):
     """
-    Analyse complète : RSI + MA + Support/Résistance + Signal
-    Retourne un dict avec tous les niveaux calculés
+    Analyse complète inspirée Trading Elite :
+    - Score de confluence /10
+    - RSI, MA20, MA50
+    - Support/Résistance réels
+    - Niveaux de Fibonacci
+    - Gestion de position professionnelle (breakeven, partial TP)
     """
     rsi  = calc_rsi(closes)
     ma20 = calc_ma(closes, 20)
     ma50 = calc_ma(closes, 50)
     support, resistance = calc_support_resistance(highs, lows, closes, price)
-    fib = calc_fibonacci(max(highs[-20:]) if len(highs) >= 20 else max(highs),
-                         min(lows[-20:])  if len(lows)  >= 20 else min(lows))
+    fib = calc_fibonacci(
+        max(highs[-20:]) if len(highs) >= 20 else max(highs),
+        min(lows[-20:])  if len(lows)  >= 20 else min(lows)
+    )
 
-    # Signal basé sur RSI + position par rapport aux MAs
-    score = 0
-    raisons = []
+    # ── Score de confluence sur 10 (inspiré Module 1 formation) ──
+    confluence = 0
+    confluences = []
 
-    if rsi is not None:
-        if rsi < 30:
-            score += 2
-            raisons.append(f"RSI {rsi:.0f} — zone de survente (signal achat)")
-        elif rsi < 45:
-            score += 1
-            raisons.append(f"RSI {rsi:.0f} — faiblesse, rebond possible")
-        elif rsi > 70:
-            score -= 2
-            raisons.append(f"RSI {rsi:.0f} — zone de surachat (signal vente)")
-        elif rsi > 55:
-            score -= 1
-            raisons.append(f"RSI {rsi:.0f} — momentum haussier")
+    # 1. Tendance Daily (MA50) — +2 points
+    if ma50:
+        if price > ma50:
+            confluence += 2
+            confluences.append("✦ Tendance haussière Daily (prix > MA50) +2")
         else:
-            raisons.append(f"RSI {rsi:.0f} — zone neutre")
+            confluences.append("✦ Tendance baissière Daily (prix < MA50) +0")
 
-    if ma20 and ma50:
-        if price > ma20 > ma50:
-            score += 2
-            raisons.append(f"Prix au-dessus MA20 & MA50 — tendance haussière")
-        elif price < ma20 < ma50:
-            score -= 2
-            raisons.append(f"Prix sous MA20 & MA50 — tendance baissière")
-        elif price > ma20:
-            score += 1
-            raisons.append(f"Prix au-dessus MA20 — court terme positif")
-        else:
-            score -= 1
-            raisons.append(f"Prix sous MA20 — court terme négatif")
-
-    # Distance au support/résistance
+    # 2. Zone S/R majeure — +2 points
     dist_support    = ((price - support) / price) * 100
     dist_resistance = ((resistance - price) / price) * 100
+    if dist_support < 3:
+        confluence += 2
+        confluences.append("✦ Prix sur zone de support majeure +2")
+    elif dist_resistance < 3:
+        confluences.append("✦ Prix sur zone de résistance — prudence +0")
+    else:
+        confluence += 1
+        confluences.append("✦ Prix entre support et résistance +1")
 
-    if dist_support < 2:
-        score += 1
-        raisons.append(f"Prix proche du support — opportunité d'achat")
-    if dist_resistance < 2:
-        score -= 1
-        raisons.append(f"Prix proche de la résistance — prudence")
+    # 3. RSI — +1 point
+    if rsi is not None:
+        if rsi < 35:
+            confluence += 1
+            confluences.append(f"✦ RSI {rsi:.0f} — survente (achat) +1")
+        elif rsi > 65:
+            confluences.append(f"✦ RSI {rsi:.0f} — surachat (vente) +0")
+        else:
+            confluences.append(f"✦ RSI {rsi:.0f} — zone neutre +0")
 
-    # Signal final
-    if score >= 3:    sig = "STRONG_BUY"
-    elif score >= 1:  sig = "BUY"
-    elif score <= -3: sig = "STRONG_SELL"
-    elif score <= -1: sig = "SELL"
-    else:             sig = "NEUTRE"
+    # 4. Structure MA20 confirme — +1 point
+    if ma20:
+        if price > ma20 and (ma50 and ma20 > ma50):
+            confluence += 1
+            confluences.append("✦ MA20 > MA50 — structure haussière confirmée +1")
+        elif price < ma20 and (ma50 and ma20 < ma50):
+            confluences.append("✦ MA20 < MA50 — structure baissière +0")
+        else:
+            confluences.append("✦ MAs mixtes — pas de tendance claire +0")
 
-    # Stop-loss = sous le support (-1% de marge)
-    stop_loss  = round(support * 0.99, 4)
-    # Take profit = vers la résistance
-    take_profit = round(resistance * 0.99, 4)
-    # Zone d'entrée = prix actuel ou légèrement sous
-    entry = round(price * 0.99 if "BUY" in sig else price * 1.01, 4)
+    # 5. Fibonacci — +1 point
+    fib50 = fib.get("0.500", 0)
+    fib618 = fib.get("0.618", 0)
+    if fib618 and fib50:
+        if fib618 <= price <= fib50:
+            confluence += 1
+            confluences.append("✦ Prix dans zone Fibonacci 50%-61.8% +1")
+        else:
+            confluences.append("✦ Prix hors zone Fibonacci +0")
 
-    # Ratio risque/rendement
+    # 6. Momentum — +1 point
+    if len(closes) >= 5:
+        momentum = ((closes[-1] - closes[-5]) / closes[-5]) * 100
+        if 0 < momentum < 5:
+            confluence += 1
+            confluences.append(f"✦ Momentum haussier modéré ({momentum:.1f}%) +1")
+        elif momentum > 5:
+            confluences.append(f"✦ Momentum fort ({momentum:.1f}%) — attention surachat +0")
+        elif momentum < -5:
+            confluences.append(f"✦ Momentum baissier fort ({momentum:.1f}%) +0")
+
+    # 7. Absence de surachat/survente extrême — +1 point
+    if rsi and 30 < rsi < 70:
+        confluence += 1
+        confluences.append("✦ RSI pas en zone extrême — entrée possible +1")
+
+    # 8. Ratio risque contrôlable — +1 point (calculé après)
+    # On l'ajoutera si R:R > 1.5
+
+    # ── Signal basé sur le score de confluence ──
+    # Biais directionnel
+    bullish = (ma50 and price > ma50) and (rsi and rsi < 60)
+    bearish = (ma50 and price < ma50) and (rsi and rsi > 40)
+
+    if confluence >= 7:
+        sig = "STRONG_BUY" if bullish else ("STRONG_SELL" if bearish else "BUY")
+    elif confluence >= 5:
+        sig = "BUY" if bullish else ("SELL" if bearish else "NEUTRE")
+    elif confluence <= 3:
+        sig = "STRONG_SELL" if bearish else "SELL"
+    else:
+        sig = "NEUTRE"
+
+    # ── Niveaux de gestion professionnelle ──
+    if "BUY" in sig:
+        entry      = round(min(price, fib.get("0.618", price) or price), 6)
+        stop_loss  = round(support * 0.985, 6)   # Sous le support avec marge
+        tp1        = round(price + (price - stop_loss) * 1.0, 6)   # +1R (breakeven)
+        tp2        = round(price + (price - stop_loss) * 1.5, 6)   # +1.5R (partial TP)
+        take_profit= round(resistance * 0.99, 6)                    # Résistance (TP final)
+    else:
+        entry      = round(max(price, fib.get("0.382", price) or price), 6)
+        stop_loss  = round(resistance * 1.015, 6)
+        tp1        = round(price - (stop_loss - price) * 1.0, 6)
+        tp2        = round(price - (stop_loss - price) * 1.5, 6)
+        take_profit= round(support * 1.01, 6)
+
     risk   = abs(price - stop_loss)
     reward = abs(take_profit - price)
     rr     = round(reward / risk, 2) if risk > 0 else 0
 
+    # Bonus confluence si R:R > 1.5
+    if rr >= 1.5:
+        confluence += 1
+        confluences.append(f"✦ R:R {rr} ≥ 1.5 — trade valide +1")
+
+    confluence = min(confluence, 10)
+
+    # Probabilité du scénario
+    if confluence >= 8:   proba = "75-85%"
+    elif confluence >= 6: proba = "60-70%"
+    elif confluence >= 4: proba = "45-55%"
+    else:                 proba = "< 40%"
+
+    # Invalidation du setup
+    if "BUY" in sig:
+        invalidation = f"Clôture Daily sous ${stop_loss:,.4f}"
+    else:
+        invalidation = f"Clôture Daily au-dessus de ${stop_loss:,.4f}"
+
     return {
-        "signal":      sig,
-        "rsi":         round(rsi, 1) if rsi else None,
-        "ma20":        round(ma20, 4) if ma20 else None,
-        "ma50":        round(ma50, 4) if ma50 else None,
-        "support":     support,
-        "resistance":  resistance,
-        "fib":         fib,
-        "entry":       entry,
-        "stop_loss":   stop_loss,
-        "take_profit": take_profit,
-        "rr_ratio":    rr,
-        "raisons":     raisons,
-        "score":       score,
+        "signal":       sig,
+        "confluence":   confluence,
+        "proba":        proba,
+        "rsi":          round(rsi, 1) if rsi else None,
+        "ma20":         round(ma20, 4) if ma20 else None,
+        "ma50":         round(ma50, 4) if ma50 else None,
+        "support":      support,
+        "resistance":   resistance,
+        "fib":          fib,
+        "entry":        entry,
+        "stop_loss":    stop_loss,
+        "tp1":          tp1,
+        "tp2":          tp2,
+        "take_profit":  take_profit,
+        "rr_ratio":     rr,
+        "confluences":  confluences,
+        "invalidation": invalidation,
     }
 
 def format_signal(sig):
@@ -404,62 +474,67 @@ def fmt(v):   return f"{'+'if v>=0 else ''}{v:.2f}%"
 #  CONSTRUCTION DES MESSAGES
 # ════════════════════════════════════════════════════════════
 
+def session_actuelle():
+    h = datetime.now().hour
+    if 8 <= h < 12:  return "🇬🇧 Kill Zone Londres — Haute probabilité"
+    if 14 <= h < 17: return "🇺🇸 Kill Zone New York — Haute probabilité"
+    if 17 <= h < 22: return "🌆 Session NY PM — Continuation"
+    if 1 <= h < 9:   return "🌏 Session Asie — Attendre Kill Zone"
+    return "🌙 Hors session — Pas de nouveau trade"
+
+def emoji_confluence(score):
+    if score >= 8: return "🟢🟢"
+    if score >= 6: return "🟢"
+    if score >= 4: return "🟡"
+    return "🔴"
+
+def format_card(label, price, d_pct, w_pct, ana, is_index=False, extra_lines=None):
+    fp = lambda v: f"{v:,.2f} pts" if is_index else (f"${v:,.4f}" if price < 10 else f"${v:,.2f}")
+    c = ana.get("confluence", 0)
+    verdict = "🟢 Fiable" if c >= 7 else ("🟡 Moyen" if c >= 5 else "🔴 Faible")
+
+    lines = [
+        f"*{label}* — {fp(price)}",
+        f"📊 24h {arrow(d_pct)}{fmt(d_pct)} | 7j {arrow(w_pct)}{fmt(w_pct)}",
+        f"",
+        f"🎯 Fiabilité du setup : {verdict} ({c}/10)",
+        f"",
+        f"📥 Zone d'entrée : *{fp(ana['entry'])}*",
+        f"🛑 Stop-Loss : *{fp(ana['stop_loss'])}* ({fmt_pct(price, ana['stop_loss'])})",
+        f"🏹 Take Profit : *{fp(ana['take_profit'])}* ({fmt_pct(price, ana['take_profit'])})",
+        f"⚖️ R/R : *{ana['rr_ratio']}x*",
+    ]
+    if extra_lines:
+        lines += extra_lines
+    return "\n".join(lines)
+
 def format_crypto_card(label, d, history=None):
     c1h  = d.get("price_change_percentage_1h_in_currency") or 0
     c24h = d.get("price_change_percentage_24h_in_currency") or 0
     c7d  = d.get("price_change_percentage_7d_in_currency") or 0
-    price = d["current_price"]
+    price  = d["current_price"]
     high24 = d.get("high_24h", price)
     low24  = d.get("low_24h", price)
 
     if history and len(history) >= 20:
-        closes = history
-        highs  = closes  # CoinGecko ne donne que les closes en daily
-        lows   = closes
-        ana = analyse_technique(closes, highs, lows, price)
+        ana = analyse_technique(history, history, history, price)
     else:
-        # Fallback si pas d'historique
         ana = {
-            "signal": "NEUTRE", "rsi": None, "ma20": None, "ma50": None,
+            "signal": "NEUTRE", "confluence": 0, "proba": "N/A",
+            "rsi": None, "ma20": None, "ma50": None,
             "support": low24, "resistance": high24,
-            "entry": price * 0.99, "stop_loss": price * 0.95,
-            "take_profit": price * 1.08, "rr_ratio": 0,
-            "raisons": [], "fib": {}
+            "entry": price, "stop_loss": price * 0.95,
+            "tp1": price * 1.03, "tp2": price * 1.05,
+            "take_profit": high24, "rr_ratio": 0,
+            "fib": {"0.618": low24}, "invalidation": "N/A"
         }
-
-    sig = ana["signal"]
-    dist_support = ((price - ana["support"]) / price) * 100
-
-    lines = [
-        f"*{label}* — ${price:,.4f}",
-        f"📊 1h {arrow(c1h)}{fmt(c1h)} | 24h {arrow(c24h)}{fmt(c24h)} | 7j {arrow(c7d)}{fmt(c7d)}",
-        f"",
-        f"🎯 *Signal : {format_signal(sig)}*",
-        f"⚠️ Risque : {risque_label(ana['rsi'], dist_support)}",
-    ]
-    if ana["rsi"]:
-        lines.append(f"📉 RSI({14}) : {ana['rsi']}")
-    if ana["ma20"]:
-        lines.append(f"📈 MA20 : ${ana['ma20']:,.4f}" + (" ✅" if price > ana["ma20"] else " ❌"))
-    lines += [
-        f"",
-        f"🔴 Support : ${ana['support']:,.4f}",
-        f"🟢 Résistance : ${ana['resistance']:,.4f}",
-        f"",
-        f"📥 *Zone d'entrée : ${ana['entry']:,.4f}*",
-        f"🏹 *Take Profit : ${ana['take_profit']:,.4f}* ({fmt_pct(price, ana['take_profit'])})",
-        f"🛑 *Stop-Loss : ${ana['stop_loss']:,.4f}* ({fmt_pct(price, ana['stop_loss'])})",
-        f"⚖️ Ratio R/R : {ana['rr_ratio']}",
-    ]
-    if ana["raisons"]:
-        lines.append(f"\n💡 " + " | ".join(ana["raisons"][:2]))
-    return "\n".join(lines)
+    return format_card(label, price, c24h, c7d, ana, extra_lines=[f"📊 1h : {arrow(c1h)}{fmt(c1h)}"])
 
 def format_stock_card(label, ticker, d):
-    c1d   = d["change_1d"]
-    c5d   = d["change_5d"]
-    price = d["price"]
-    idx   = ticker.startswith("^")
+    c1d    = d["change_1d"]
+    c5d    = d["change_5d"]
+    price  = d["price"]
+    idx    = ticker.startswith("^")
     closes = d.get("closes", [])
     highs  = d.get("highs", [])
     lows   = d.get("lows", [])
@@ -468,44 +543,15 @@ def format_stock_card(label, ticker, d):
         ana = analyse_technique(closes, highs, lows, price)
     else:
         ana = {
-            "signal": "NEUTRE", "rsi": None, "ma20": None, "ma50": None,
+            "signal": "NEUTRE", "confluence": 0, "proba": "N/A",
+            "rsi": None, "ma20": None, "ma50": None,
             "support": d["low"], "resistance": d["high"],
-            "entry": price * 0.99, "stop_loss": price * 0.95,
-            "take_profit": price * 1.08, "rr_ratio": 0,
-            "raisons": [], "fib": {}
+            "entry": price, "stop_loss": price * 0.95,
+            "tp1": price * 1.03, "tp2": price * 1.05,
+            "take_profit": d["high"], "rr_ratio": 0,
+            "fib": {"0.618": d["low"]}, "invalidation": "N/A"
         }
-
-    sig = ana["signal"]
-    dist_support = ((price - ana["support"]) / price) * 100
-    fp = lambda v: fmt_price(v, idx)
-
-    lines = [
-        f"*{label}* — {fp(price)}",
-        f"📊 Auj. {arrow(c1d)}{fmt(c1d)} | Sem. {arrow(c5d)}{fmt(c5d)}",
-        f"📈 Haut: {fp(d['high'])} | Bas: {fp(d['low'])}",
-        f"",
-        f"🎯 *Signal : {format_signal(sig)}*",
-        f"⚠️ Risque : {risque_label(ana['rsi'], dist_support)}",
-    ]
-    if ana["rsi"]:
-        lines.append(f"📉 RSI(14) : {ana['rsi']}")
-    if ana["ma20"]:
-        lines.append(f"📈 MA20 : {fp(ana['ma20'])}" + (" ✅" if price > ana["ma20"] else " ❌"))
-    if ana["ma50"]:
-        lines.append(f"📈 MA50 : {fp(ana['ma50'])}" + (" ✅" if price > ana["ma50"] else " ❌"))
-    lines += [
-        f"",
-        f"🔴 Support : {fp(ana['support'])}",
-        f"🟢 Résistance : {fp(ana['resistance'])}",
-        f"",
-        f"📥 *Zone d'entrée : {fp(ana['entry'])}*",
-        f"🏹 *Take Profit : {fp(ana['take_profit'])}* ({fmt_pct(price, ana['take_profit'])})",
-        f"🛑 *Stop-Loss : {fp(ana['stop_loss'])}* ({fmt_pct(price, ana['stop_loss'])})",
-        f"⚖️ Ratio R/R : {ana['rr_ratio']}",
-    ]
-    if ana["raisons"]:
-        lines.append(f"\n💡 " + " | ".join(ana["raisons"][:2]))
-    return "\n".join(lines)
+    return format_card(label, price, c1d, c5d, ana, is_index=idx)
 
 def build_market_msg(cp, yp):
     now = datetime.now().strftime("%d/%m/%Y à %Hh%M")
